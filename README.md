@@ -7,8 +7,13 @@ alternative to the built-in screenshot/recording tool.
 ## Features
 
 - **Menu bar only** — no dock icon, no windows.
-- **Region recording** — drag to select a region. The last region is saved
-  automatically and persists across launches.
+- **Region recording** — drag to select a screen region. The last selection is
+  saved automatically and persists across launches.
+- **Window recording** — bind to a specific window and record a region within it.
+  The recording keeps capturing that window even when it's **covered by other
+  windows**, moved, or off to the side (like a Zoom window share, but cropped).
+  Won't capture a minimized window; a few apps that pause drawing while fully
+  hidden may show a stale frame until revealed.
 - **Global shortcuts:**
   - Start / Stop Recording — `⌘⌥P`
   - Pause / Resume Recording — `⌘⌥[` (only while recording)
@@ -62,8 +67,11 @@ stable identity, so you grant permission **once** and it sticks across rebuilds.
 
 ## Usage
 
-1. Click the menu bar icon → **Select Region…**, then drag out a region
-   (Esc cancels).
+1. Click the menu bar icon → either:
+   - **Select Region…** — drag out a screen region (Esc cancels), or
+   - **Select Window…** — click a window to lock it, then drag a region inside
+     it (or Return for the whole window). This binds to the window so it records
+     even when covered.
 2. **Start Recording** (`⌘⌥P`). The icon becomes a pulsing red bubble and a
    dotted border appears around the region.
 3. **Pause / Resume** (`⌘⌥[`) as needed — paused time is removed from the file.
@@ -76,9 +84,10 @@ stable identity, so you grant permission **once** and it sticks across rebuilds.
 | `ScreenRecorderApp.swift` | SwiftUI `App` entry; hosts the AppDelegate. |
 | `AppDelegate.swift` | Status item, menu, hotkeys, state → UI wiring. |
 | `RecordingManager.swift` | ScreenCaptureKit capture + AVAssetWriter, pause/resume. |
-| `RegionSelectorController.swift` | Drag-to-select overlay (no dimming). |
+| `RegionSelectorController.swift` | Drag-to-select screen-region overlay (no dimming). |
+| `WindowPickerController.swift` | Click-a-window then drag-a-region overlay. |
 | `RegionBorderController.swift` | Click-through dotted region border (excluded from capture). |
-| `RegionStore.swift` | Persists the last region in UserDefaults. |
+| `CaptureTarget.swift` | Display-region / window capture target, persistence, coordinate helpers. |
 | `HotKeyCenter.swift` | Global Carbon hotkeys. |
 | `OverlayWindow.swift` | Borderless key-capable window subclass. |
 | `setup.sh` | Creates the stable self-signed signing identity (idempotent). |

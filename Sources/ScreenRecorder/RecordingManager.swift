@@ -44,6 +44,7 @@ final class RecordingManager: NSObject, SCStreamOutput, SCStreamDelegate {
     enum RecError: LocalizedError {
         case permissionDenied
         case noDisplay
+        case windowUnavailable
         case setupFailed(String)
 
         var errorDescription: String? {
@@ -52,6 +53,8 @@ final class RecordingManager: NSObject, SCStreamOutput, SCStreamDelegate {
                 return "Screen Recording permission is required.\n\nGrant it in System Settings → Privacy & Security → Screen Recording, then relaunch the app and try again."
             case .noDisplay:
                 return "Couldn't find a display for the selected region. Try selecting the region again."
+            case .windowUnavailable:
+                return "The bound window isn't available (it may be closed or minimized). Choose “Select Window…” again."
             case .setupFailed(let msg):
                 return "Failed to start recording: \(msg)"
             }
@@ -60,10 +63,10 @@ final class RecordingManager: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: - Public control
 
-    func start(region: CGRect) {
+    func start(target: CaptureTarget) {
         Task {
             do {
-                try await performStart(region: region)
+                try await performStart(target: target)
             } catch {
                 await MainActor.run {
                     self.onError?((error as? RecError)?.errorDescription ?? error.localizedDescription)
@@ -97,61 +100,16 @@ final class RecordingManager: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: - Start
 
-    private func performStart(region: CGRect) async throws {
+    private func performStart(target: CaptureTarget) async throws {
         guard CGPreflightScreenCaptureAccess() else {
             CGRequestScreenCaptureAccess()
             throw RecError.permissionDenied
         }
 
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+        let (filter, config) = try await buildFilterAndConfig(for: target)
 
-        // Pick the display with the largest overlap with the region.
-        guard let screen = NSScreen.screens.max(by: {
-            area($0.frame.intersection(region)) < area($1.frame.intersection(region))
-        }) ?? NSScreen.main,
-              let displayID = screenNumber(screen),
-              let display = content.displays.first(where: { $0.displayID == displayID })
-        else { throw RecError.noDisplay }
-
-        // Convert the global region to display-local, top-left-origin points.
-        let scale = screen.backingScaleFactor
-        var localX = region.minX - screen.frame.minX
-        var localY = screen.frame.maxY - region.maxY // flip Y
-        var width = region.width
-        var height = region.height
-
-        // Clamp to the display bounds.
-        localX = max(0, min(localX, screen.frame.width - 1))
-        localY = max(0, min(localY, screen.frame.height - 1))
-        width = min(width, screen.frame.width - localX)
-        height = min(height, screen.frame.height - localY)
-
-        let sourceRect = CGRect(x: localX, y: localY, width: width, height: height)
-        let pixelWidth = even(Int((width * scale).rounded()))
-        let pixelHeight = even(Int((height * scale).rounded()))
-        guard pixelWidth >= 2, pixelHeight >= 2 else {
-            throw RecError.setupFailed("region too small")
-        }
-
-        // Stream configuration.
-        let config = SCStreamConfiguration()
-        config.sourceRect = sourceRect
-        config.width = pixelWidth
-        config.height = pixelHeight
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 60) // 60 fps
-        config.showsCursor = false
-        config.capturesAudio = true
-        config.excludesCurrentProcessAudio = true
-        config.pixelFormat = kCVPixelFormatType_32BGRA
-        config.queueDepth = 8
-        config.sampleRate = 48_000
-        config.channelCount = 2
-
-        let filter = SCContentFilter(display: display, excludingWindows: [])
-
-        // Output file.
         let url = makeOutputURL()
-        try setupWriter(url: url, width: pixelWidth, height: pixelHeight)
+        try setupWriter(url: url, width: config.width, height: config.height)
         outputURL = url
 
         // Reset timeline state.
@@ -173,6 +131,94 @@ final class RecordingManager: NSObject, SCStreamOutput, SCStreamDelegate {
         self.stream = stream
         sampleQueue.sync { self.state = .recording }
         notify(.recording, url: nil)
+    }
+
+    /// Builds the ScreenCaptureKit filter + configuration for either a display
+    /// region or a specific window (with an optional sub-region crop).
+    private func buildFilterAndConfig(for target: CaptureTarget) async throws -> (SCContentFilter, SCStreamConfiguration) {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+
+        switch target {
+        case .displayRegion(let region):
+            // Pick the display with the largest overlap with the region.
+            guard let screen = NSScreen.screens.max(by: {
+                area($0.frame.intersection(region)) < area($1.frame.intersection(region))
+            }) ?? NSScreen.main,
+                  let displayID = screenNumber(screen),
+                  let display = content.displays.first(where: { $0.displayID == displayID })
+            else { throw RecError.noDisplay }
+
+            // Convert the global region to display-local, top-left-origin points.
+            let scale = screen.backingScaleFactor
+            var localX = region.minX - screen.frame.minX
+            var localY = screen.frame.maxY - region.maxY // flip Y
+            var width = region.width
+            var height = region.height
+            localX = max(0, min(localX, screen.frame.width - 1))
+            localY = max(0, min(localY, screen.frame.height - 1))
+            width = min(width, screen.frame.width - localX)
+            height = min(height, screen.frame.height - localY)
+
+            let sourceRect = CGRect(x: localX, y: localY, width: width, height: height)
+            let config = makeConfig(sourceRect: sourceRect,
+                                    pixelWidth: even(Int((width * scale).rounded())),
+                                    pixelHeight: even(Int((height * scale).rounded())))
+            return (SCContentFilter(display: display, excludingWindows: []), config)
+
+        case .window(let spec):
+            guard let window = resolveWindow(spec, in: content) else {
+                throw RecError.windowUnavailable
+            }
+            let windowSize = window.frame.size // points, window-local
+            let scale = screenScale(forTopLeftRect: window.frame)
+
+            // Sub-region in window-local, top-left points; empty => whole window.
+            let full = CGRect(origin: .zero, size: windowSize)
+            var sourceRect = spec.subRect.isEmpty ? full : spec.subRect.intersection(full)
+            if sourceRect.isEmpty { sourceRect = full }
+
+            let config = makeConfig(sourceRect: sourceRect,
+                                    pixelWidth: even(Int((sourceRect.width * scale).rounded())),
+                                    pixelHeight: even(Int((sourceRect.height * scale).rounded())))
+            return (SCContentFilter(desktopIndependentWindow: window), config)
+        }
+    }
+
+    private func makeConfig(sourceRect: CGRect, pixelWidth: Int, pixelHeight: Int) -> SCStreamConfiguration {
+        let config = SCStreamConfiguration()
+        config.sourceRect = sourceRect
+        config.width = max(2, pixelWidth)
+        config.height = max(2, pixelHeight)
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 60) // 60 fps
+        config.showsCursor = false
+        config.capturesAudio = true
+        config.excludesCurrentProcessAudio = true
+        config.pixelFormat = kCVPixelFormatType_32BGRA
+        config.queueDepth = 8
+        config.sampleRate = 48_000
+        config.channelCount = 2
+        return config
+    }
+
+    private func resolveWindow(_ spec: WindowSpec, in content: SCShareableContent) -> SCWindow? {
+        if let byID = content.windows.first(where: { $0.windowID == spec.windowID }) {
+            return byID
+        }
+        // Fall back to the same app (window IDs don't survive relaunches).
+        let sameApp = content.windows.filter {
+            $0.owningApplication?.bundleIdentifier == spec.bundleID
+        }
+        if !spec.title.isEmpty, let byTitle = sameApp.first(where: { ($0.title ?? "") == spec.title }) {
+            return byTitle
+        }
+        return sameApp.max(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height })
+    }
+
+    private func screenScale(forTopLeftRect rect: CGRect) -> CGFloat {
+        let appKit = Coord.appKit(fromTopLeft: rect)
+        let center = CGPoint(x: appKit.midX, y: appKit.midY)
+        let screen = NSScreen.screens.first { $0.frame.contains(center) } ?? NSScreen.main
+        return screen?.backingScaleFactor ?? 2
     }
 
     private func setupWriter(url: URL, width: Int, height: Int) throws {

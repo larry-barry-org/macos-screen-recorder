@@ -6,9 +6,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let recorder = RecordingManager()
     private let border = RegionBorderController()
     private var selector: RegionSelectorController?
+    private var windowPicker: WindowPickerController?
 
     private var uiState: RecState = .idle
-    private var region: CGRect? {
+    private var target: CaptureTarget? {
         didSet { updateMenu() }
     }
 
@@ -16,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let startItem = NSMenuItem()
     private let pauseItem = NSMenuItem()
     private let selectItem = NSMenuItem()
+    private let selectWindowItem = NSMenuItem()
 
     // Live "last recorded frame" preview at the bottom of the menu.
     private let previewSeparator = NSMenuItem.separator()
@@ -31,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        region = RegionStore.load()
+        target = TargetStore.load()
 
         setupStatusItem()
         setupMenu()
@@ -96,6 +98,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         selectItem.action = #selector(selectRegion)
         menu.addItem(selectItem)
 
+        selectWindowItem.title = "Select Window…"
+        selectWindowItem.target = self
+        selectWindowItem.action = #selector(selectWindow)
+        menu.addItem(selectWindowItem)
+
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
@@ -116,12 +123,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateMenu() {
         let recording = uiState != .idle
         startItem.title = recording ? "Stop Recording" : "Start Recording"
-        startItem.isEnabled = recording || (region != nil)
+        startItem.isEnabled = recording || (target != nil)
 
         pauseItem.title = (uiState == .paused) ? "Resume Recording" : "Pause Recording"
         pauseItem.isEnabled = recording
 
         selectItem.isEnabled = !recording
+        selectWindowItem.isEnabled = !recording
     }
 
     // MARK: - Hotkeys
@@ -140,11 +148,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleRecord() {
         if uiState == .idle {
-            guard let region else {
-                presentError("No region selected. Choose “Select Region…” first.")
+            guard let target else {
+                presentError("No capture target selected. Choose “Select Region…” or “Select Window…” first.")
                 return
             }
-            recorder.start(region: region)
+            recorder.start(target: target)
         } else {
             recorder.stop()
         }
@@ -170,10 +178,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.begin { [weak self] rect in
                 guard let self else { return }
                 if let rect {
-                    self.region = rect
-                    RegionStore.save(rect)
+                    self.target = .displayRegion(rect)
+                    TargetStore.save(.displayRegion(rect))
                 }
                 self.selector = nil
+                self.updateMenu()
+            }
+        }
+    }
+
+    @objc private func selectWindow() {
+        guard uiState == .idle else { return }
+        border.hide()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let picker = WindowPickerController()
+            self.windowPicker = picker
+            picker.begin { [weak self] spec in
+                guard let self else { return }
+                if let spec {
+                    self.target = .window(spec)
+                    TargetStore.save(.window(spec))
+                }
+                self.windowPicker = nil
                 self.updateMenu()
             }
         }
@@ -199,9 +226,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .recording:
             statusItem.button?.image = recordingIcon
             startPulse()
-            if let region {
-                border.show(region: region, recording: true)
-                sizePreview(aspect: region.width / max(region.height, 1))
+            switch target {
+            case .displayRegion(let r)?:
+                border.show(region: r, recording: true)
+                sizePreview(aspect: r.width / max(r.height, 1))
+            case .window(let spec)?:
+                // The window may be covered, so no on-screen border.
+                border.hide()
+                let a = spec.subRect.isEmpty ? 16.0 / 9.0
+                    : spec.subRect.width / max(spec.subRect.height, 1)
+                sizePreview(aspect: a)
+            case nil:
+                break
             }
             showPreview()
 
