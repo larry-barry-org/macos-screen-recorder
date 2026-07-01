@@ -21,6 +21,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/ScreenRecorder"
 cp Info.plist "$APP/Contents/Info.plist"
+if [ -f Resources/AppIcon.icns ]; then
+    cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+fi
 
 if security find-identity -p codesigning | grep -q "$IDENTITY"; then
     echo "▸ Code signing with '$IDENTITY'…"

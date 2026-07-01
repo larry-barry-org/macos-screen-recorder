@@ -86,3 +86,4 @@ stable identity, so you grant permission **once** and it sticks across rebuilds.
 | `setup.sh` | Creates the stable self-signed signing identity (idempotent). |
 | `build.sh` | Compiles, bundles, and signs the app. |
 | `package-dmg.sh` | Packages the app into a DMG. |
+| `icon/make-icon.sh` | Regenerates `Resources/AppIcon.icns` (the app icon). |
