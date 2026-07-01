@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import CoreImage
 import CoreMedia
 import ScreenCaptureKit
 
@@ -16,8 +17,13 @@ final class RecordingManager: NSObject, SCStreamOutput, SCStreamDelegate {
 
     var onStateChange: ((RecState, URL?) -> Void)?
     var onError: ((String) -> Void)?
+    /// Emits a small downscaled preview of the latest recorded frame (~10 fps,
+    /// on the main queue) for the live menu-bar thumbnail.
+    var onFrame: ((CGImage) -> Void)?
 
     private let sampleQueue = DispatchQueue(label: "com.local.ScreenRecorder.samples")
+    private let ciContext = CIContext()
+    private var frameCounter = 0
 
     private var stream: SCStream?
     private var writer: AVAssetWriter?
@@ -156,6 +162,7 @@ final class RecordingManager: NSObject, SCStreamOutput, SCStreamDelegate {
             pauseStartPTS = .zero
             lastPTS = .zero
             justResumed = false
+            frameCounter = 0
         }
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
@@ -263,6 +270,7 @@ final class RecordingManager: NSObject, SCStreamOutput, SCStreamDelegate {
             if videoInput?.isReadyForMoreMediaData == true {
                 videoInput?.append(retimed)
             }
+            emitThumbnailIfNeeded(sampleBuffer)
         case .audio:
             if audioInput?.isReadyForMoreMediaData == true {
                 audioInput?.append(retimed)
@@ -277,6 +285,23 @@ final class RecordingManager: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     // MARK: - Helpers
+
+    /// Downscale roughly every 6th frame (~10 fps) into a small CGImage for the
+    /// menu-bar preview. Runs on sampleQueue; delivers on the main queue.
+    private func emitThumbnailIfNeeded(_ sampleBuffer: CMSampleBuffer) {
+        frameCounter += 1
+        guard frameCounter % 6 == 0,
+              let onFrame,
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        let ci = CIImage(cvImageBuffer: pixelBuffer)
+        guard ci.extent.height > 0 else { return }
+        let targetHeight: CGFloat = 44
+        let scale = targetHeight / ci.extent.height
+        let scaled = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        guard let cg = ciContext.createCGImage(scaled, from: scaled.extent) else { return }
+        DispatchQueue.main.async { onFrame(cg) }
+    }
 
     private func isFrameComplete(_ sampleBuffer: CMSampleBuffer) -> Bool {
         guard let arr = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)

@@ -17,10 +17,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let pauseItem = NSMenuItem()
     private let selectItem = NSMenuItem()
 
-    // Pulse animation for the recording icon.
-    private var pulseTimer: Timer?
-    private var pulsePhase: CGFloat = 0
-
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -37,6 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         recorder.onError = { [weak self] message in
             self?.presentError(message)
+        }
+        recorder.onFrame = { [weak self] frame in
+            self?.updateThumbnail(frame)
         }
     }
 
@@ -175,41 +174,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         uiState = state
         switch state {
         case .idle:
-            stopPulse()
             statusItem.button?.image = idleIcon
             statusItem.button?.alphaValue = 1
             border.hide()
             if let url { NSWorkspace.shared.activateFileViewerSelecting([url]) }
 
         case .recording:
+            // Shown until the first frame arrives; then live thumbnails take over.
             statusItem.button?.image = recordingIcon
-            startPulse()
+            statusItem.button?.alphaValue = 1
             if let region { border.show(region: region, recording: true) }
 
         case .paused:
-            stopPulse()
-            statusItem.button?.image = recordingIcon
+            // Keep the last thumbnail, dimmed, to signal the paused state.
             statusItem.button?.alphaValue = 0.5
         }
         updateMenu()
     }
 
-    // MARK: - Pulse animation
+    // MARK: - Live menu-bar thumbnail
 
-    private func startPulse() {
-        pulseTimer?.invalidate()
-        pulsePhase = 0
-        pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self, let button = self.statusItem.button else { return }
-            self.pulsePhase += 0.18
-            button.alphaValue = 0.4 + 0.6 * (0.5 + 0.5 * sin(self.pulsePhase))
-        }
+    private func updateThumbnail(_ frame: CGImage) {
+        guard uiState == .recording else { return }
+        statusItem.button?.image = makeMenuBarImage(from: frame)
+        statusItem.button?.alphaValue = 1
     }
 
-    private func stopPulse() {
-        pulseTimer?.invalidate()
-        pulseTimer = nil
-        statusItem.button?.alphaValue = 1
+    /// Fits the frame into the menu-bar height and overlays a small red dot.
+    private func makeMenuBarImage(from cg: CGImage) -> NSImage {
+        let maxHeight: CGFloat = 18
+        let maxWidth: CGFloat = 46
+        let w = CGFloat(cg.width), h = CGFloat(cg.height)
+        let scale = min(maxHeight / h, maxWidth / w)
+        let size = NSSize(width: max(8, (w * scale).rounded()),
+                          height: max(8, (h * scale).rounded()))
+
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .medium
+        let rect = NSRect(origin: .zero, size: size)
+        NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3).addClip()
+        NSImage(cgImage: cg, size: size).draw(in: rect)
+
+        let d: CGFloat = 6
+        let dotRect = NSRect(x: 2, y: size.height - d - 2, width: d, height: d)
+        NSColor.systemRed.setFill()
+        NSBezierPath(ovalIn: dotRect).fill()
+        NSColor.white.withAlphaComponent(0.9).setStroke()
+        let ring = NSBezierPath(ovalIn: dotRect.insetBy(dx: 0.5, dy: 0.5))
+        ring.lineWidth = 0.5
+        ring.stroke()
+
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
     }
 
     // MARK: - Errors
