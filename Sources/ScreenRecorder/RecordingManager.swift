@@ -3,6 +3,7 @@ import AVFoundation
 import CoreImage
 import CoreMedia
 import ScreenCaptureKit
+import VideoToolbox
 
 enum RecState {
     case idle
@@ -224,12 +225,34 @@ final class RecordingManager: NSObject, SCStreamOutput, SCStreamDelegate {
     private func setupWriter(url: URL, width: Int, height: Int) throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
 
-        let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
+        // Constant-quality encoding at maximum quality (1.0): perceptually
+        // lossless for screen content, while static frames still cost almost
+        // nothing so files stay far smaller than ProRes. HEVC roughly halves
+        // size vs. H.264 at equal quality; fall back to H.264 if HEVC is
+        // unavailable (older/Intel Macs).
+        let compression: [String: Any] = [
+            kVTCompressionPropertyKey_Quality as String: 1.0,
+            AVVideoMaxKeyFrameIntervalKey: 120,
+            AVVideoExpectedSourceFrameRateKey: 60,
+        ]
+        let hevcInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
-        ]
-        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+            AVVideoCompressionPropertiesKey: compression,
+        ])
+        let videoInput: AVAssetWriterInput
+        if writer.canAdd(hevcInput) {
+            videoInput = hevcInput
+        } else {
+            videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: width,
+                AVVideoHeightKey: height,
+                AVVideoCompressionPropertiesKey: compression.merging(
+                    [AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel]) { a, _ in a },
+            ])
+        }
         videoInput.expectsMediaDataInRealTime = true
 
         let audioSettings: [String: Any] = [

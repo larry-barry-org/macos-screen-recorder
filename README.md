@@ -21,7 +21,9 @@ alternative to the built-in screenshot/recording tool.
   **not** dimmed, and the border itself is **excluded from the recording**.
 - **Animated icon** — a pulsing red bubble while recording; a film icon when idle.
 - **System audio** captured; **no microphone**, **no cursor**.
-- **60 fps**, saved to `~/Downloads/ScreenRecording_<timestamp>.mov`.
+- **60 fps**, **HEVC** at maximum constant quality (visually lossless for screen
+  content) with small files, saved to `~/Downloads/ScreenRecording_<timestamp>.mov`.
+  Falls back to H.264 High on Macs without HEVC.
 
 ## Install (prebuilt)
 
