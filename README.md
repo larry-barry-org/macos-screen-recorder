@@ -17,7 +17,6 @@ alternative to the built-in screenshot/recording tool.
 - **Animated icon** — a pulsing red bubble while recording; a film icon when idle.
 - **System audio** captured; **no microphone**, **no cursor**.
 - **60 fps**, saved to `~/Downloads/ScreenRecording_<timestamp>.mov`.
-  When recording stops, the file is revealed in Finder.
 
 ## Install (prebuilt)
 
@@ -68,8 +67,7 @@ stable identity, so you grant permission **once** and it sticks across rebuilds.
 2. **Start Recording** (`⌘⌥P`). The icon becomes a pulsing red bubble and a
    dotted border appears around the region.
 3. **Pause / Resume** (`⌘⌥[`) as needed — paused time is removed from the file.
-4. **Stop Recording** (`⌘⌥P`). The `.mov` is saved to Downloads and revealed in
-   Finder.
+4. **Stop Recording** (`⌘⌥P`). The `.mov` is saved to `~/Downloads`.
 
 ## Project layout
 

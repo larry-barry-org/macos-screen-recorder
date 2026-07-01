@@ -17,6 +17,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let pauseItem = NSMenuItem()
     private let selectItem = NSMenuItem()
 
+    // Live "last recorded frame" preview at the bottom of the menu.
+    private let previewSeparator = NSMenuItem.separator()
+    private let previewItem = NSMenuItem()
+    private let previewImageView = NSImageView()
+
+    // Pulse animation for the recording icon.
+    private var pulseTimer: Timer?
+    private var pulsePhase: CGFloat = 0
+
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -35,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.presentError(message)
         }
         recorder.onFrame = { [weak self] frame in
-            self?.updateThumbnail(frame)
+            self?.updatePreview(frame)
         }
     }
 
@@ -92,6 +101,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
+
+        // Full-width live preview of the last recorded frame. Added under Quit
+        // only while recording (see showPreview); never occupies space when idle.
+        previewImageView.imageScaling = .scaleProportionallyUpOrDown
+        previewImageView.imageAlignment = .alignCenter
+        previewImageView.frame = NSRect(x: 0, y: 0, width: 240, height: 135)
+        previewItem.view = previewImageView
 
         statusItem.menu = menu
         updateMenu()
@@ -174,60 +190,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         uiState = state
         switch state {
         case .idle:
+            stopPulse()
             statusItem.button?.image = idleIcon
             statusItem.button?.alphaValue = 1
             border.hide()
-            if let url { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            hidePreview()
 
         case .recording:
-            // Shown until the first frame arrives; then live thumbnails take over.
             statusItem.button?.image = recordingIcon
-            statusItem.button?.alphaValue = 1
-            if let region { border.show(region: region, recording: true) }
+            startPulse()
+            if let region {
+                border.show(region: region, recording: true)
+                sizePreview(aspect: region.width / max(region.height, 1))
+            }
+            showPreview()
 
         case .paused:
-            // Keep the last thumbnail, dimmed, to signal the paused state.
+            stopPulse()
+            statusItem.button?.image = recordingIcon
             statusItem.button?.alphaValue = 0.5
         }
         updateMenu()
     }
 
-    // MARK: - Live menu-bar thumbnail
+    // MARK: - Pulse animation
 
-    private func updateThumbnail(_ frame: CGImage) {
-        guard uiState == .recording else { return }
-        statusItem.button?.image = makeMenuBarImage(from: frame)
+    private func startPulse() {
+        pulseTimer?.invalidate()
+        pulsePhase = 0
+        pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            guard let self, let button = self.statusItem.button else { return }
+            self.pulsePhase += 0.18
+            button.alphaValue = 0.4 + 0.6 * (0.5 + 0.5 * sin(self.pulsePhase))
+        }
+    }
+
+    private func stopPulse() {
+        pulseTimer?.invalidate()
+        pulseTimer = nil
         statusItem.button?.alphaValue = 1
     }
 
-    /// Fits the frame into the menu-bar height and overlays a small red dot.
-    private func makeMenuBarImage(from cg: CGImage) -> NSImage {
-        let maxHeight: CGFloat = 18
-        let maxWidth: CGFloat = 46
-        let w = CGFloat(cg.width), h = CGFloat(cg.height)
-        let scale = min(maxHeight / h, maxWidth / w)
-        let size = NSSize(width: max(8, (w * scale).rounded()),
-                          height: max(8, (h * scale).rounded()))
+    // MARK: - Live frame preview (in-menu)
 
-        let image = NSImage(size: size)
-        image.lockFocus()
-        NSGraphicsContext.current?.imageInterpolation = .medium
-        let rect = NSRect(origin: .zero, size: size)
-        NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3).addClip()
-        NSImage(cgImage: cg, size: size).draw(in: rect)
+    private func showPreview() {
+        guard previewItem.menu == nil, let menu = statusItem.menu else { return }
+        menu.addItem(previewSeparator)
+        menu.addItem(previewItem)
+    }
 
-        let d: CGFloat = 6
-        let dotRect = NSRect(x: 2, y: size.height - d - 2, width: d, height: d)
-        NSColor.systemRed.setFill()
-        NSBezierPath(ovalIn: dotRect).fill()
-        NSColor.white.withAlphaComponent(0.9).setStroke()
-        let ring = NSBezierPath(ovalIn: dotRect.insetBy(dx: 0.5, dy: 0.5))
-        ring.lineWidth = 0.5
-        ring.stroke()
+    private func hidePreview() {
+        previewItem.menu?.removeItem(previewItem)
+        previewSeparator.menu?.removeItem(previewSeparator)
+        previewImageView.image = nil
+    }
 
-        image.unlockFocus()
-        image.isTemplate = false
-        return image
+    private func sizePreview(aspect: CGFloat) {
+        let width: CGFloat = 240
+        let height = min(max(width / max(aspect, 0.1), 80), 180)
+        previewImageView.frame = NSRect(x: 0, y: 0, width: width, height: height)
+    }
+
+    private func updatePreview(_ frame: CGImage) {
+        guard uiState != .idle else { return }
+        previewImageView.image = NSImage(cgImage: frame, size: .zero)
     }
 
     // MARK: - Errors

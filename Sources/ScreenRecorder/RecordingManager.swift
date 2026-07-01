@@ -296,7 +296,7 @@ final class RecordingManager: NSObject, SCStreamOutput, SCStreamDelegate {
 
         let ci = CIImage(cvImageBuffer: pixelBuffer)
         guard ci.extent.height > 0 else { return }
-        let targetHeight: CGFloat = 44
+        let targetHeight: CGFloat = 240
         let scale = targetHeight / ci.extent.height
         let scaled = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         guard let cg = ciContext.createCGImage(scaled, from: scaled.extent) else { return }
